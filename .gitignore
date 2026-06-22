@@ -1,17 +1,17 @@
-# Large data & artifacts (download separately, see REPRODUCE.md)
+# Large data (download separately, see REPRODUCE.md)
 synapse_data/
 amos_data/
 /data/
 Datasets/
 
-# Checkpoints & logs
-weights/
+# Runtime logs & temp checkpoints (weights/ is bundled in repo via Git LFS)
 logs/
 tmp_ckpts/
 model/
 *.pth
-*.pt
-*.ckpt
+!weights/
+!weights/**/
+!weights/**/*.pth
 
 # Visualization outputs
 vis_synapse/
