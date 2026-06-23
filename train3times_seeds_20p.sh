@@ -1,17 +1,18 @@
 #!/bin/bash
 
-
 labeled_pct=20  # default
+extra_args=""   # extra args forwarded to train script (e.g. --lambda_cdba 0.05 --lambda_sac 0.2)
 
-while getopts 'm:e:c:t:l:w:p:' OPT; do
+while getopts 'm:e:c:t:l:w:p:x:' OPT; do
     case $OPT in
         m) method=$OPTARG;;
         e) exp=$OPTARG;;
         c) cuda=$OPTARG;;
-		    t) task=$OPTARG;;
-		    l) lr=$OPTARG;;
-		    w) cps_w=$OPTARG;;
-		    p) labeled_pct=$OPTARG;;
+        t) task=$OPTARG;;
+        l) lr=$OPTARG;;
+        w) cps_w=$OPTARG;;
+        p) labeled_pct=$OPTARG;;
+        x) extra_args=$OPTARG;;
     esac
 done
 echo $method
@@ -27,11 +28,11 @@ cps="AB"
 
 echo $folder
 
-python code/train_${method}.py --task ${task} --exp ${folder}${method}${exp}/fold1 --seed 0 -g ${cuda} --base_lr ${lr} -w ${cps_w} -ep ${epoch} -sl ${labeled_data} -su ${unlabeled_data} -r
+python code/train_${method}.py --task ${task} --exp ${folder}${method}${exp}/fold1 --seed 0 -g ${cuda} --base_lr ${lr} -w ${cps_w} -ep ${epoch} -sl ${labeled_data} -su ${unlabeled_data} -r ${extra_args}
 python code/test.py --task ${task} --exp ${folder}${method}${exp}/fold1 -g ${cuda} --cps ${cps}
-python code/train_${method}.py --task ${task} --exp ${folder}${method}${exp}/fold2 --seed 1 -g ${cuda} --base_lr ${lr} -w ${cps_w} -ep ${epoch} -sl ${labeled_data} -su ${unlabeled_data} -r
+python code/train_${method}.py --task ${task} --exp ${folder}${method}${exp}/fold2 --seed 1 -g ${cuda} --base_lr ${lr} -w ${cps_w} -ep ${epoch} -sl ${labeled_data} -su ${unlabeled_data} -r ${extra_args}
 python code/test.py --task ${task} --exp ${folder}${method}${exp}/fold2 -g ${cuda} --cps ${cps}
-python code/train_${method}.py --task ${task} --exp ${folder}${method}${exp}/fold3 --seed 666 -g ${cuda} --base_lr ${lr} -w ${cps_w} -ep ${epoch} -sl ${labeled_data} -su ${unlabeled_data} -r
+python code/train_${method}.py --task ${task} --exp ${folder}${method}${exp}/fold3 --seed 666 -g ${cuda} --base_lr ${lr} -w ${cps_w} -ep ${epoch} -sl ${labeled_data} -su ${unlabeled_data} -r ${extra_args}
 python code/test.py --task ${task} --exp ${folder}${method}${exp}/fold3 -g ${cuda} --cps ${cps}
 
 python code/evaluate_Ntimes_npy.py --task ${task} --exp ${folder}${method}${exp} --folds 3 --cps ${cps}
