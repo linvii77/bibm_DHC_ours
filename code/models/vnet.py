@@ -139,7 +139,7 @@ class VNet(nn.Module):
 
         return x1, x2, x3, x4, x5
 
-    def decoder(self, features):
+    def decoder(self, features, return_features=False):
         x1, x2, x3, x4, x5 = features
         # print(x1.size(), x2.size(), x3.size())
         x5_up = self.block_five_up(x5)
@@ -160,21 +160,23 @@ class VNet(nn.Module):
         x9 = self.block_nine(x8_up)
         if self.has_dropout:
             x9 = self.dropout(x9)
-        
+
         out = self.out_conv(x9)
+        if return_features:
+            return out, x6          # x6: n_filters*8 ch, 1/8 resolution
         return out
 
-    def forward(self, image, turnoff_drop=False):
+    def forward(self, image, turnoff_drop=False, return_features=False):
         if turnoff_drop:
             has_dropout = self.has_dropout
             self.has_dropout = False
-        
+
         features = self.encoder(image)
-        out = self.decoder(features)
-        
+        out = self.decoder(features, return_features=return_features)
+
         if turnoff_drop:
             self.has_dropout = has_dropout
-        
+
         return out
 
 

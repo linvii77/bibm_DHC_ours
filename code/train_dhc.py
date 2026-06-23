@@ -22,6 +22,14 @@ parser.add_argument('-g', '--gpu', type=str, default='0')
 parser.add_argument('-w', '--cps_w', type=float, default=1)
 parser.add_argument('-r', '--cps_rampup', action='store_true', default=True) # <--
 parser.add_argument('-cr', '--consistency_rampup', type=float, default=None)
+parser.add_argument('--lambda_cdba',           type=float, default=0.05)
+parser.add_argument('--lambda_sac',            type=float, default=0.2)
+parser.add_argument('--lambda_var',            type=float, default=0.2)
+parser.add_argument('--embedding_dim',         type=int,   default=256)
+parser.add_argument('--vapl_warmup',           type=int,   default=3000)
+parser.add_argument('--variation_warmup',      type=int,   default=3000)
+parser.add_argument('--tau_var',               type=float, default=5.0)
+parser.add_argument('--max_samples_per_class', type=int,   default=200)
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
@@ -36,6 +44,7 @@ from torch.cuda.amp import GradScaler, autocast
 from models.vnet import VNet
 from utils import EMA, maybe_mkdir, get_lr, fetch_data, seed_worker, poly_lr, print_func, kaiming_normal_init_weight
 from utils.loss import DC_and_CE_loss, RobustCrossEntropyLoss, SoftDiceLoss
+from utils.fused_proxy import FusedProxyLoss
 from data.transforms import RandomCrop, CenterCrop, ToTensor, RandomFlip_LR, RandomFlip_UD
 from data.data_loaders import Synapse_AMOS
 from utils.config import Config
@@ -257,6 +266,22 @@ if __name__ == '__main__':
     model_A = kaiming_normal_init_weight(model_A)
     model_B = kaiming_normal_init_weight(model_B)
 
+    use_fused = args.lambda_cdba > 0 or args.lambda_sac > 0
+    if use_fused:
+        _fp_kwargs = dict(
+            in_channels=config.n_filters * 8,
+            num_classes=config.num_cls,
+            embedding_dim=args.embedding_dim,
+            lambda_var=args.lambda_var,
+            ignore_index=255,
+            tau_var=args.tau_var,
+            max_samples_per_class=args.max_samples_per_class,
+            variation_warmup_iters=args.variation_warmup,
+        )
+        fused_proxy_A = FusedProxyLoss(**_fp_kwargs).cuda()
+        fused_proxy_B = FusedProxyLoss(**_fp_kwargs).cuda()
+        optimizer_A.add_param_group({'params': fused_proxy_A.parameters()})
+        optimizer_B.add_param_group({'params': fused_proxy_B.parameters()})
 
     # make loss function
     diffdw = DiffDW(config.num_cls, accumulate_iters=50)
@@ -277,6 +302,7 @@ if __name__ == '__main__':
     cps_w = get_current_consistency_weight(0)
     best_eval = 0.0
     best_epoch = 0
+    iter_num = 0
     for epoch_num in range(args.max_epoch + 1):
         loss_list = []
         loss_cps_list = []
@@ -295,8 +321,12 @@ if __name__ == '__main__':
 
             if args.mixed_precision:
                 with autocast():
-                    output_A = model_A(image)
-                    output_B = model_B(image)
+                    if use_fused:
+                        output_A, feat_A = model_A(image, return_features=True)
+                        output_B, feat_B = model_B(image, return_features=True)
+                    else:
+                        output_A = model_A(image)
+                        output_B = model_B(image)
                     del image
 
                     # sup (ce + dice)
@@ -324,7 +354,19 @@ if __name__ == '__main__':
                     loss_cps = cps_loss_func_A(output_A, max_B) + cps_loss_func_B(output_B, max_A)
                     loss = loss_sup + cps_w * loss_cps
 
-
+                    sac_active  = use_fused
+                    cdba_active = use_fused and args.lambda_cdba > 0 and iter_num >= args.vapl_warmup
+                    if sac_active or cdba_active:
+                        loss_cdba_A, loss_sac_A, fp_stats_A = fused_proxy_A(
+                            feat_A, label_l.squeeze(1), tmp_bs, iter_num=iter_num)
+                        loss_cdba_B, loss_sac_B, fp_stats_B = fused_proxy_B(
+                            feat_B, label_l.squeeze(1), tmp_bs, iter_num=iter_num)
+                        loss_fp = torch.zeros(1).cuda()
+                        if sac_active:
+                            loss_fp = loss_fp + args.lambda_sac * (loss_sac_A + loss_sac_B)
+                        if cdba_active:
+                            loss_fp = loss_fp + args.lambda_cdba * (loss_cdba_A + loss_cdba_B)
+                        loss = loss + loss_fp
 
                 # backward passes should not be under autocast.
                 amp_grad_scaler.scale(loss).backward()
@@ -336,6 +378,17 @@ if __name__ == '__main__':
             else:
                 raise NotImplementedError
 
+            iter_num += 1
+            if use_fused and (sac_active or cdba_active) and iter_num % 100 == 0:
+                logging.info(
+                    '  FusedProxy cdba={:.4f} sac={:.4f} g_pos={:.4f} '
+                    'sac_on={} cdba_on={}'.format(
+                        fp_stats_A.loss_cdba.item(),
+                        fp_stats_A.loss_sac.item(),
+                        fp_stats_A.g_pos_mean.item(),
+                        sac_active, cdba_active,
+                    )
+                )
             loss_list.append(loss.item())
             loss_sup_list.append(loss_sup.item())
             loss_cps_list.append(loss_cps.item())
